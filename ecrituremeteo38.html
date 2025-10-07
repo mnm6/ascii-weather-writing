@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ASCII Weather — Stable Zoom Clouds</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+body {margin:0;background:#111;color:#eee;font-family:monospace;overflow:hidden;}
+#map{width:100vw;height:100vh;filter:grayscale(100%) brightness(85%) contrast(1.05);}
+canvas{position:absolute;top:0;left:0;pointer-events:none;}
+#panel{
+  position:absolute;top:10px;left:50%;transform:translateX(-50%);
+  background:rgba(25,25,25,0.85);padding:10px 15px;border-radius:10px;
+  backdrop-filter:blur(4px);font-size:13px;z-index:10;
+}
+input,button{background:#333;color:#eee;border:none;padding:4px 6px;border-radius:4px;}
+button:hover{background:#666;}
+#loader{
+  display:none;width:16px;height:16px;border:2px solid #ffcc66;border-top-color:transparent;
+  border-radius:50%;animation:spin 1s linear infinite;margin-left:6px;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<canvas id="sky"></canvas>
+
+<div id="panel">
+  <div>
+    <label>Word:</label>
+    <input id="word" type="text" value="CLOUD" maxlength="12">
+    <button id="regen">Regenerate</button>
+    <button id="typhoon">Typhoon</button>
+  </div>
+  <div style="margin-top:6px;">
+    <label>Date:</label>
+    <input id="date" type="date" value="2025-10-07">
+    <label>Hour:</label>
+    <input id="hour" type="time" value="12:00">
+    <button id="load">Load Weather</button>
+    <div id="loader"></div>
+  </div>
+  <div id="data" style="margin-top:6px;">
+    ☁️ <span id="cloudVal">--</span>% |
+    💨 <span id="windVal">--</span> m/s |
+    🌧 <span id="rainVal">--</span> mm/h |
+    🔶 Sun: <span id="sunPos">--</span>
+  </div>
+</div>
+
+// ——— réglages finesse du mouvement ———
+const WORD_SIZE_SCALE = 0.8;        // tu l'as déjà (taille des ●), ajuste à 0.7/0.9
+const WIND_DRIFT_BASE = 0.000015;   // était ~0.00002 : plus petit = plus doux
+const WIND_DRIFT_SCALE = 0.28;      // poids du vent sur les mots (0.3 avant)
+const BREATH_AMP      = 0.000006;   // amplitude de "respiration" (0.000008 avant)
+const BREATH_FREQ     = 1.2;        // fréquence de respiration (1.5 avant)
+
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map("map", { zoomControl: true }).setView([48.8566, 2.3522], 17);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png", {
+  attribution: "", opacity: 0.9
+}).addTo(map);
+
+const canvas = document.getElementById("sky");
+const ctx = canvas.getContext("2d");
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+// On laisse la carte recevoir les interactions
+canvas.style.pointerEvents = "none";
+
+window.addEventListener("resize", () => {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+});
+
+// --- ÉTAT GLOBAL ---
+let clouds = [], wordClouds = [], globalRainDrops = [];
+let windAngle = 0, windSpeed = 1, cloudCover = 50, rainAmount = 0;
+let sun = { x: canvas.width/2, y: canvas.height/2, size: 40, visible: false };
+let draggingSun = false;
+
+let typhoonActive = false;
+let typhoonUntil = 0;
+
+// --- Nuages de fond (○) ---
+function createClouds() {
+  clouds = [];
+  const b = map.getBounds();
+  for (let i = 0; i < 1200; i++) {
+    const lat = b.getSouth() + Math.random() * (b.getNorth() - b.getSouth());
+    const lng = b.getWest() + Math.random() * (b.getEast() - b.getWest());
+    clouds.push({ lat, lng, alpha: 0.7 + Math.random()*0.3, char: "○" });
+  }
+}
+createClouds();
+map.on("moveend", createClouds);
+
+// --- Météo : fiable (timezone=auto) ---
+async function loadWeather(center) {
+  const c = center || map.getCenter();
+  const date = document.getElementById("date").value;
+  const hourLocal = parseInt(document.getElementById("hour").value.split(":")[0], 10);
+  const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${c.lat.toFixed(3)}&longitude=${c.lng.toFixed(3)}&start_date=${date}&end_date=${date}&hourly=cloudcover,precipitation,wind_speed_10m,wind_direction_10m&timezone=auto`;
+
+  try {
+    const res = await fetch(url);
+    const j = await res.json();
+    if (!j?.hourly?.time) return;
+
+    // repère précisément l'heure locale désirée
+    const idx = j.hourly.time.findIndex(t => t.endsWith(`T${String(hourLocal).padStart(2,"0")}:00`));
+    const k = idx >= 0 ? idx : 12;
+
+    cloudCover = j.hourly.cloudcover?.[k] ?? 50;
+    rainAmount = j.hourly.precipitation?.[k] ?? 0;
+    windSpeed  = Math.max(0.5, (j.hourly.wind_speed_10m?.[k] ?? 2) / 3);
+    windAngle  = ((j.hourly.wind_direction_10m?.[k] ?? 180) * Math.PI) / 180;
+
+    // UI
+    document.getElementById("cloudVal").textContent = Math.round(cloudCover);
+    document.getElementById("rainVal").textContent  = (rainAmount).toFixed(2);
+    document.getElementById("windVal").textContent  = (windSpeed*3).toFixed(1);
+
+    // Soleil visible et positionné selon l'heure
+    placeSunByHour(hourLocal);
+    sun.visible = true;
+  } catch (e) {
+    console.warn("Weather error:", e);
+  }
+}
+document.getElementById("load").onclick = () => loadWeather(map.getCenter());
+
+// --- Soleil : position initiale selon l'heure ---
+function placeSunByHour(hourInt) {
+  const W = canvas.width, H = canvas.height;
+  if (hourInt < 10) {        // matin
+    sun.x = W * 0.8; sun.y = H * 0.8;
+  } else if (hourInt < 16) { // midi
+    sun.x = W * 0.5; sun.y = H * 0.2;
+  } else {                   // soir
+    sun.x = W * 0.2; sun.y = H * 0.8;
+  }
+}
+
+// --- Drag du soleil (même avec pointer-events:none) ---
+document.addEventListener("pointerdown", (e) => {
+  if (!sun.visible) return;
+  const dx = e.clientX - sun.x, dy = e.clientY - sun.y;
+  if (Math.hypot(dx, dy) < sun.size) draggingSun = true;
+});
+document.addEventListener("pointermove", (e) => {
+  if (draggingSun) { sun.x = e.clientX; sun.y = e.clientY; }
+});
+document.addEventListener("pointerup", () => draggingSun = false);
+
+// --- Sampling de mot en pixels écran (lisible fort dézoom) ---
+function getWordPointsResponsive(word, desiredWidthPx){
+  const off = document.createElement("canvas");
+  const c   = off.getContext("2d");
+
+  const offW = Math.round(desiredWidthPx);
+  const offH = Math.round(desiredWidthPx * 0.42);
+  off.width = offW; off.height = offH;
+
+  let fontPx = Math.round(desiredWidthPx * 0.3);
+  c.font = `bold ${fontPx}px monospace`;
+  let tw = c.measureText(word).width;
+  if (tw > offW * 0.92) {
+    fontPx = Math.max(12, Math.round(fontPx * (offW*0.92 / tw)));
+    c.font = `bold ${fontPx}px monospace`;
+    tw = c.measureText(word).width;
+  }
+
+  c.fillStyle = "#fff";
+  c.fillText(word, (offW - tw)/2, Math.round(offH * 0.72));
+
+  const img = c.getImageData(0,0,offW,offH).data;
+
+  // pas adaptatif : plus large => plus dense
+  const step = Math.max(3, Math.round(offW / 180));
+  const pts = [];
+  for (let y=0; y<offH; y+=step){
+    for (let x=0; x<offW; x+=step){
+      const i = (y*offW + x)*4;
+      if (img[i] > 200) pts.push({x,y});
+    }
+  }
+  return { pts, offW, offH, step };
+}
+
+// Largeur cible écran souhaitée pour un mot, selon zoom
+function desiredWidthFromZoom(zoom){
+  // lisible à zoom 10–12, raisonnable à 17
+  return Math.round(Math.min(1100, Math.max(520, 520 + (17 - Math.min(zoom,17)) * 100)));
+}
+
+// --- Regenerate : crée un mot avec LOD (offsets écran figés) ---
+document.getElementById("regen").onclick = () => {
+  const word = document.getElementById("word").value || "CLOUD";
+  const zoom = map.getZoom();
+
+  // 1) forme en pixels écran (stable et lisible)
+  const desiredWidth = desiredWidthFromZoom(zoom);
+  const { pts, offW, offH } = getWordPointsResponsive(word, desiredWidth);
+
+  // 2) ancrage géographique + coord écran
+  const anchorLL = map.getCenter();
+  const anchorCP = map.latLngToContainerPoint(anchorLL);
+
+  // météo figée pour ce mot
+  const localWeather = { windAngle, windSpeed, rainAmount, cloudCover };
+
+  // taille de ● de base (évolue avec le scale LOD)
+  const basePointPx = Math.max(18, Math.min(38, Math.round(22 + (desiredWidth - 600) / 25)));
+
+  const group = {
+    points: [],
+    weather: localWeather,
+    opacity: 1,
+    forming: true,
+    // infos LOD
+    anchorLL,
+    baseW: offW, baseH: offH,
+    basePointPx,
+    pointPx: basePointPx
+  };
+
+  for (const p of pts){
+    const px = p.x - offW/2;
+    const py = p.y - offH/2;
+    // cible initiale (scale=1) pour amorcer le mouvement
+    const targetLL = map.containerPointToLatLng([ anchorCP.x + px, anchorCP.y + py ]);
+    const base = clouds[Math.floor(Math.random()*clouds.length)];
+    group.points.push({
+      lat: base.lat, lng: base.lng,
+      // offsets écran stockés pour LOD
+      px, py,
+      // cible lat/lng (sera recalculée à chaque frame selon scale LOD)
+      targetLat: targetLL.lat, targetLng: targetLL.lng,
+      alpha: 0.25, char: "○", phase: Math.random()*Math.PI*2
+    });
+  }
+  wordClouds.push(group);
+};
+
+// --- Typhoon : souffle fort décroissant puis reset doux ---
+document.getElementById("typhoon").onclick = () => {
+  typhoonActive = true;
+  typhoonUntil = performance.now() + 4000; // 4s
+};
+
+// --- Boucle de rendu ---
+function draw() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  const now = performance.now();
+  const tSec = now / 1000;
+
+  // Typhoon power (0..1)
+  let tyPower = 0;
+  if (typhoonActive) {
+    tyPower = Math.max(0, (typhoonUntil - now) / 4000);
+    if (tyPower === 0) {
+      typhoonActive = false;
+      // reset doux du ciel (on garde la météo et le soleil)
+      wordClouds = [];
+      globalRainDrops = [];
+      createClouds();
+    }
+  }
+
+  // --- Soleil (● 40px) avec léger pulse en orage
+  if (sun.visible) {
+    const stormy = rainAmount > 2 || cloudCover > 80;
+    const pulse = stormy ? (Math.sin(tSec*3)*0.2 + 1) : 1;
+    ctx.font = `${sun.size}px monospace`;
+    ctx.fillStyle = "#ffcc66";
+    ctx.globalAlpha = pulse;
+    ctx.shadowBlur = 25;
+    ctx.shadowColor = "rgba(255,220,120,0.8)";
+    ctx.fillText("●", sun.x, sun.y);
+    ctx.shadowBlur = 0;
+  }
+
+  // --- Nuages de fond (○)
+  const moveFactor = 0.00002*windSpeed;
+  ctx.font = `20px monospace`;
+  for (const c of clouds) {
+    c.lat += Math.sin(windAngle)*moveFactor*(typhoonActive ? (80*tyPower+1) : 1);
+    c.lng += Math.cos(windAngle)*moveFactor*(typhoonActive ? (80*tyPower+1) : 1);
+
+    const pt = map.latLngToContainerPoint([c.lat, c.lng]);
+    ctx.globalAlpha = c.alpha * (typhoonActive ? (1 - 0.7*(1-tyPower)) : 1);
+    ctx.fillStyle = "#fff";
+    ctx.fillText("○", pt.x, pt.y);
+  }
+
+  // --- Mots (LOD dynamique : lisibles même fort dézoom)
+  for (const group of wordClouds) {
+    const wv = group.weather;
+    const wMove = 0.00002*wv.windSpeed;
+
+    // LOD : échelle courante vs gabarit de création
+    const desiredNow = desiredWidthFromZoom(map.getZoom());
+    const scale = Math.max(0.6, Math.min(2.2, desiredNow / group.baseW));
+
+    // taille du ● selon LOD
+    const WORD_SIZE_SCALE = 0.8; // ← 0.8 = -20%, ajuste comme tu veux
+    // ...
+    group.pointPx = Math.round(group.basePointPx * scale * WORD_SIZE_SCALE);
+    ctx.font = `${group.pointPx}px monospace`;
+
+
+    // ancre écran (immuable en lat/lng, mais bouge en pixels quand on pan)
+    const anchorCP = map.latLngToContainerPoint(group.anchorLL);
+
+    for (const p of group.points) {
+      // cible écran au zoom courant (+ easing)
+      const targetCPx = anchorCP.x + p.px * scale;
+      const targetCPy = anchorCP.y + p.py * scale;
+      const targetLL  = map.containerPointToLatLng([targetCPx, targetCPy]);
+
+      const k = group.forming ? 0.10 : 0.05; // convergence douce
+      p.lat += (targetLL.lat - p.lat) * k;
+      p.lng += (targetLL.lng - p.lng) * k;
+
+      if (group.forming) {
+        p.alpha = Math.min(1, p.alpha + 0.03);
+        if (p.alpha > 0.7) p.char = "○";
+      } else if (typhoonActive) {
+        p.lat += Math.sin(wv.windAngle)*wMove*(120*tyPower+0.3);
+        p.lng += Math.cos(wv.windAngle)*wMove*(120*tyPower+0.3);
+        p.alpha = Math.max(0, p.alpha - 0.02*(1-tyPower));
+      } else {
+        // respiration + vent propre au mot
+        p.lat += Math.sin(wv.windAngle)*wMove*0.25 + Math.sin(tSec*1.5 + p.phase)*0.000008;
+        p.lng += Math.cos(wv.windAngle)*wMove*0.25 + Math.cos(tSec*1.5 + p.phase)*0.000008;
+        if (Math.random()<0.0005) p.alpha = Math.max(0, p.alpha - 0.001);
+      }
+
+      const pt = map.latLngToContainerPoint([p.lat, p.lng]);
+
+      // Ombre portée décalée (direction soleil → point)
+      if (sun.visible) {
+        const dx = pt.x - sun.x, dy = pt.y - sun.y;
+        const dist = Math.max(1, Math.hypot(dx, dy));
+        const offX = (dx/dist) * 8, offY = (dy/dist) * 8;
+        const shade = Math.max(0, 1 - dist/300);
+        ctx.globalAlpha = p.alpha * (group.opacity ?? 1) * 0.45 * shade;
+        ctx.fillStyle = "rgba(60,60,80,0.6)";
+        ctx.fillText(p.char, pt.x + offX, pt.y + offY);
+      }
+
+      // Lettre (○)
+      ctx.globalAlpha = p.alpha * (group.opacity ?? 1);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(p.char, pt.x, pt.y);
+
+      // Pluie issue du mot (météo figée)
+      if (!typhoonActive && wv.rainAmount>0.1 && Math.random()<wv.rainAmount*0.002) {
+        globalRainDrops.push({
+          lat:p.lat, lng:p.lng, yOffset:0,
+          speed: 2 + wv.rainAmount*3,
+          wind: wv.windAngle,
+          char: Math.random()<0.5 ? ":" : ";"
+        });
+      }
+    }
+
+    if (group.forming && Math.random()<0.01) group.forming = false;
+  }
+  // retire les groupes complètement éteints
+  wordClouds = wordClouds.filter(g => g.points.some(p => p.alpha>0.02));
+
+  // --- Pluie globale (depuis les mots)
+  ctx.globalAlpha = 0.8;
+  ctx.fillStyle = "#66ccff";
+  ctx.font = `16px monospace`;
+  for (const d of globalRainDrops) {
+    d.yOffset += d.speed * (typhoonActive ? (1 + 1.5) : 1);
+    d.lng += Math.cos(d.wind) * 0.00005 * (typhoonActive ? 3 : 1);
+    const pt = map.latLngToContainerPoint([d.lat, d.lng]);
+    ctx.fillText(d.char, pt.x, pt.y + d.yOffset);
+  }
+  globalRainDrops = globalRainDrops.filter(d => d.yOffset < 250);
+
+  requestAnimationFrame(draw);
+}
+draw();
+</script>
+</body>
+</html>
