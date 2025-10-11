@@ -239,12 +239,12 @@ document.getElementById("warp").onclick=()=>{
   loadWeather(map.getCenter());
 };
 
-// ---------- PRINT (GitHub Pages friendly: impression synchrone) ----------
+// ---------- PRINT (robuste: iframe d'abord, fallback nouvelle fenêtre) ----------
 document.getElementById("printBtn").onclick = function () {
   var text = (wordsHistory.length ? wordsHistory.join(" / ") : (document.getElementById("word").value || "・・・"));
   var safe = escapeHtml(text);
 
-  // HTML à imprimer (concaténation ASCII)
+  // HTML de la page A4 (pas de backticks)
   var html = ""
     + "<!DOCTYPE html>\n"
     + "<html>\n"
@@ -272,36 +272,68 @@ document.getElementById("printBtn").onclick = function () {
     + "</body>\n"
     + "</html>";
 
-  // 1) Crée un iframe caché même origine
-  var iframe = document.createElement("iframe");
-  iframe.style.position = "fixed";
-  iframe.style.right = "0";
-  iframe.style.bottom = "0";
-  iframe.style.width = "0";
-  iframe.style.height = "0";
-  iframe.style.border = "0";
-  iframe.setAttribute("aria-hidden", "true");
-  document.body.appendChild(iframe);
-
-  // 2) Écrit le document et IMPRIME tout de suite (même geste utilisateur)
-  var iw = iframe.contentWindow;
-  var doc = iw.document;
-  doc.open();
-  doc.write(html);
-  doc.close();
-
-  // 3) Nettoyage fiable
-  function cleanup(){ try { document.body.removeChild(iframe); } catch(e){} }
-  iw.addEventListener("afterprint", cleanup, { once: true });
-  setTimeout(cleanup, 8000); // fallback Safari/iOS
-
-  // 4) Déclencher l’impression immédiatement conserve le "user gesture"
+  // --- Tentative 1: iframe caché, impression immédiate (même geste utilisateur) ---
   try {
-    iw.focus();
-    iw.print();
-  } catch (e) {
-    // petit délai si le moteur a besoin de composer la page
-    setTimeout(function(){ try { iw.focus(); iw.print(); } catch(_){} }, 50);
+    var iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    iframe.setAttribute("aria-hidden", "true");
+    document.body.appendChild(iframe);
+
+    var iw = iframe.contentWindow;
+    var doc = iw.document;
+    doc.open();
+    doc.write(html);
+    doc.close();
+
+    function cleanup() { try { document.body.removeChild(iframe); } catch(e){} }
+
+    var printed = false;
+    // si afterprint fonctionne, on nettoie
+    iw.addEventListener("afterprint", function(){ printed = true; cleanup(); }, { once: true });
+
+    // Impression synchronisée (user gesture conservée)
+    try {
+      iw.focus();
+      // double RAF pour laisser le moteur composer la page, sans perdre le geste utilisateur
+      iw.requestAnimationFrame(function(){ iw.requestAnimationFrame(function(){ 
+        try { iw.print(); } catch(e) {}
+      });});
+    } catch(e) {
+      // tentative directe si RAF indisponible
+      try { iw.print(); } catch(_) {}
+    }
+
+    // Fallback: si rien au bout de 1200 ms, on passe à la fenêtre
+    setTimeout(function(){
+      if (!printed) {
+        cleanup();
+        openWindowPrint(html);
+      }
+    }, 1200);
+
+  } catch (err) {
+    // En cas d'erreur, fallback immédiat
+    openWindowPrint(html);
+  }
+
+  // --- Fallback: nouvelle fenêtre (toujours déclenché par le clic) ---
+  function openWindowPrint(htmlStr){
+    var w = window.open("", "_blank", "noopener,noreferrer");
+    if (!w) return; // popup bloquée : l'utilisateur devra autoriser
+    var d = w.document;
+    d.open();
+    // on ajoute un petit script pour imprimer après le chargement, puis fermer la fenêtre
+    d.write(
+      htmlStr.replace("</body>",
+        '<script>window.addEventListener("load",function(){setTimeout(function(){window.print(); window.close();}, 50);});<\/script></body>'
+      )
+    );
+    d.close();
   }
 };
 
