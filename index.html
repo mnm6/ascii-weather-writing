@@ -239,18 +239,18 @@ document.getElementById("warp").onclick=()=>{
   loadWeather(map.getCenter());
 };
 
-// ---------- PRINT (iframe caché, sans backticks/template string) ----------
+// ---------- PRINT (GitHub Pages friendly: impression synchrone) ----------
 document.getElementById("printBtn").onclick = function () {
   var text = (wordsHistory.length ? wordsHistory.join(" / ") : (document.getElementById("word").value || "・・・"));
   var safe = escapeHtml(text);
 
-  // Compose le HTML par concaténation classique
+  // HTML à imprimer (concaténation ASCII)
   var html = ""
     + "<!DOCTYPE html>\n"
     + "<html>\n"
     + "<head>\n"
     + '<meta charset="utf-8">\n'
-    + "<title>Ecriture Meteo</title>\n"
+    + "<title>Print — ASCII Weather Words</title>\n"
     + "<style>\n"
     + "  @page { size: A4; margin: 12mm; }\n"
     + "  html, body { background: #fff; color: #666; font-family: monospace; }\n"
@@ -264,19 +264,15 @@ document.getElementById("printBtn").onclick = function () {
     + "<body>\n"
     + '  <div class="page">\n'
     + '    <div class="wrap">\n'
-    + "      <h1>Ecriture Meteo</h1>\n"
+    + "      <h1>ASCII Weather — Words</h1>\n"
     + '      <div class="content">' + safe + "</div>\n"
     + "    </div>\n"
     + "  </div>\n"
-    + '  <div class="footer">Generated from Ecriture Meteo — ' + escapeHtml(new Date().toLocaleString()) + "</div>\n"
-    + "  <script>\n"
-    + "    window.addEventListener('load', function(){ setTimeout(function(){ window.print(); }, 50); });\n"
-    + "    window.addEventListener('afterprint', function(){ try { parent.postMessage({type:'PRINT_DONE'}, '*'); } catch(e){} });\n"
-    + "  <\/script>\n"
+    + '  <div class="footer">Generated from ASCII Weather — ' + escapeHtml(new Date().toLocaleString()) + "</div>\n"
     + "</body>\n"
     + "</html>";
 
-  // Iframe caché
+  // 1) Crée un iframe caché même origine
   var iframe = document.createElement("iframe");
   iframe.style.position = "fixed";
   iframe.style.right = "0";
@@ -287,33 +283,27 @@ document.getElementById("printBtn").onclick = function () {
   iframe.setAttribute("aria-hidden", "true");
   document.body.appendChild(iframe);
 
-  // Nettoyage fiable (message + fallback timeout)
-  function cleanup() { try { document.body.removeChild(iframe); } catch(e){} }
-  function onMsg(ev){
-    if (ev && ev.data && ev.data.type === "PRINT_DONE") {
-      window.removeEventListener("message", onMsg);
-      cleanup();
-    }
+  // 2) Écrit le document et IMPRIME tout de suite (même geste utilisateur)
+  var iw = iframe.contentWindow;
+  var doc = iw.document;
+  doc.open();
+  doc.write(html);
+  doc.close();
+
+  // 3) Nettoyage fiable
+  function cleanup(){ try { document.body.removeChild(iframe); } catch(e){} }
+  iw.addEventListener("afterprint", cleanup, { once: true });
+  setTimeout(cleanup, 8000); // fallback Safari/iOS
+
+  // 4) Déclencher l’impression immédiatement conserve le "user gesture"
+  try {
+    iw.focus();
+    iw.print();
+  } catch (e) {
+    // petit délai si le moteur a besoin de composer la page
+    setTimeout(function(){ try { iw.focus(); iw.print(); } catch(_){} }, 50);
   }
-  window.addEventListener("message", onMsg);
-  setTimeout(function(){ window.removeEventListener("message", onMsg); cleanup(); }, 8000);
-
-  // Ecrit le HTML et déclenche l'impression
-  iframe.onload = function(){
-    try {
-      var doc = iframe.contentWindow.document;
-      doc.open();
-      doc.write(html);
-      doc.close();
-    } catch(e) {
-      // Fallback très rare: si doc.write échoue, on tente srcdoc
-      try { iframe.srcdoc = html; } catch(_) {}
-    }
-  };
-  // Charge about:blank pour garantir l'événement onload
-  iframe.src = "about:blank";
 };
-
 
 // ---------- Draw loop ----------
 function draw(){
