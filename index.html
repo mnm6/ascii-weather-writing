@@ -9,6 +9,7 @@
 html, body { margin:0; height:100%; background:#111; color:#eee; font-family:monospace; overflow:hidden; }
 #map { position:absolute; inset:0; z-index:0; filter:grayscale(100%) brightness(85%) contrast(1.05); }
 #sky { position:absolute; inset:0; z-index:5; pointer-events:none; }
+
 /* Panel */
 #panel{
   position:absolute; top:12px; left:12px; width:280px; display:flex; flex-direction:column; gap:10px;
@@ -24,10 +25,6 @@ html, body { margin:0; height:100%; background:#111; color:#eee; font-family:mon
 #word:focus{ outline:none; box-shadow:inset 0 0 0 2px hsl(60, 1%, 71%), 0 0 0 2px rgba(255,204,102,.25); background:#414141; }
 #panel button{ background:#444; color:#eee; border:none; padding:6px 10px; border-radius:6px; cursor:pointer; }
 #panel button:hover{ background:#666; }
-.switch{ display:inline-flex; align-items:center; gap:8px; cursor:pointer; } .switch input{ display:none; }
-.toggle{ width:36px; height:18px; background:#555; border-radius:18px; position:relative; transition:background .2s; }
-.toggle::after{ content:""; position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:50%; background:#ddd; transition:left .2s; }
-input:checked + .toggle{ background:#3aa163; } input:checked + .toggle::after{ left:20px; }
 .spin{ display:inline-block; margin-left:6px; animation:rot 1s linear infinite; opacity:.6; }
 @keyframes rot { from{transform:rotate(0)} to{transform:rotate(360deg)} }
 
@@ -36,6 +33,12 @@ input:checked + .toggle{ background:#3aa163; } input:checked + .toggle::after{ l
   position:absolute; left:12px; bottom:12px; z-index:1001;
   background:rgba(20,20,20,.86); padding:8px 10px; border-radius:10px; backdrop-filter: blur(4px);
 }
+
+/* Style spécifique du bouton Print : gris foncé + lettres blanches */
+#printBtn{
+  background:#222; color:#fff; border:none; padding:8px 12px; border-radius:10px; cursor:pointer;
+}
+#printBtn:hover{ background:#333; }
 
 /* Toggle UI button (cache/affiche panel + printBar) */
 #uiToggle{
@@ -83,11 +86,7 @@ input:checked + .toggle{ background:#3aa163; } input:checked + .toggle::after{ l
       <button id="warp">Warp weather</button>
       <button id="typhoon">Typhoon</button>
     </div>
-    <div class="row">
-      <label class="switch" title="Reload weather after each map move">
-        <input id="autoWeather" type="checkbox"/><span class="toggle"></span><span>Auto weather on move</span>
-      </label>
-    </div>
+    <!-- (switch Auto weather on move supprimé) -->
   </div>
   <div class="block" id="data">
     <div>☁️ Cloud cover: <b><span id="cloudVal">--</span>%</b></div>
@@ -137,7 +136,6 @@ let clouds=[], wordClouds=[], rainDrops=[], lightningDrops=[], snowFlakes=[];
 let windAngle=0, windSpeed=1, cloudCover=50, rainAmount=0, snowAmount=0;
 let sun={x:canvas.width/2,y:canvas.height/2,size:40,visible:false}, draggingSun=false;
 let typhoonActive=false, typhoonUntil=0;
-let autoWeather=false; const autoChk=document.getElementById("autoWeather");
 let alertsState={ thunder:false, gale:false, storm:false, typhoon:false, snow:false };
 
 // Historique de mots pour l’impression
@@ -150,7 +148,10 @@ function degToDirArrow(deg){const d=[{n:"N",c:"↑",a:0},{n:"NE",c:"↗",a:45},{
 function escapeHtml(s){return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
 
 document.addEventListener("DOMContentLoaded",()=>{const de=document.getElementById("date");if(de&&!de.value){try{const f=new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Paris",year:"numeric",month:"2-digit",day:"2-digit"});de.value=f.format(new Date());}catch{const d=new Date();de.value=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;}}
- const he=document.getElementById("hour");if(he&&!he.value){const h=String(new Date().getHours()).padStart(2,"0");he.value=`${h}:00`;}});
+ const he=document.getElementById("hour");if(he&&!he.value){const h=String(new Date().getHours()).padStart(2,"0");he.value=`${h}:00`;}
+ // météo initiale au démarrage
+ loadWeather(map.getCenter());
+});
 
 // ---------- Background clouds ----------
 function createClouds(){clouds=[];const b=map.getBounds();
@@ -159,9 +160,8 @@ function createClouds(){clouds=[];const b=map.getBounds();
   clouds.push({lat,lng,alpha:.7+Math.random()*.3});}}
 createClouds();
 
-let autoTimer=null;
-map.on("moveend",()=>{createClouds(); if(!autoWeather) return; if(autoTimer)clearTimeout(autoTimer); autoTimer=setTimeout(()=>loadWeather(map.getCenter()),350);});
-autoChk.addEventListener("change",()=>{autoWeather=autoChk.checked;});
+// Auto weather on move: toujours actif, sans switch
+map.on("moveend",()=>{ createClouds(); loadWeather(map.getCenter()); });
 
 // ---------- Weather (archive) ----------
 async function loadWeather(center){
@@ -175,7 +175,7 @@ async function loadWeather(center){
     cloudCover=j.hourly.cloudcover?.[k]??50;
     rainAmount=j.hourly.precipitation?.[k]??0;
     snowAmount=j.hourly.snowfall?.[k]??0;
-    windSpeed=Math.max(.5,(j.hourly.wind_speed_10m?.[k]??2)/3); // pour drift (pas affichage direct)
+    windSpeed=Math.max(.5,(j.hourly.wind_speed_10m?.[k]??2)/3); // pour drift
     const windDirDeg=j.hourly.wind_direction_10m?.[k]??180; windAngle=(windDirDeg*Math.PI)/180;
 
     const ms=windSpeed*3, kmh=ms*3.6;
@@ -304,7 +304,7 @@ document.getElementById("printBtn").onclick = function () {
   var words = (wordsHistory.length ? wordsHistory.join(" / ") : (document.getElementById("word").value || "・・・"));
   var safe = escapeHtml(words);
   var meta = collectPrintMeta();
-  var titleName = printFileTitle(meta); // ex: ascii-weather-20251007-1500.pdf
+  var titleName = printFileTitle(meta);
 
   var legend =
       "Location: " + meta.lat + ", " + meta.lng + "\n" +
