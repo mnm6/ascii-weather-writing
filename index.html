@@ -21,7 +21,7 @@ html, body { margin:0; height:100%; background:#111; color:#eee; font-family:mon
   width:100%; box-sizing:border-box; background:#2c2c2c; color:#eee; border:none; padding:6px 8px; border-radius:6px;
 }
 #word{ background:#3a3a3a !important; box-shadow:inset 0 0 0 1px #666; }
-#word:focus{ outline:none; box-shadow:inset 0 0 0 2px #ffcc66, 0 0 0 2px rgba(255,204,102,.25); background:#414141; }
+#word:focus{ outline:none; box-shadow:inset 0 0 0 2px hsl(60, 1%, 71%), 0 0 0 2px rgba(255,204,102,.25); background:#414141; }
 #panel button{ background:#444; color:#eee; border:none; padding:6px 10px; border-radius:6px; cursor:pointer; }
 #panel button:hover{ background:#666; }
 .switch{ display:inline-flex; align-items:center; gap:8px; cursor:pointer; } .switch input{ display:none; }
@@ -36,11 +36,26 @@ input:checked + .toggle{ background:#3aa163; } input:checked + .toggle::after{ l
   position:absolute; left:12px; bottom:12px; z-index:1001;
   background:rgba(20,20,20,.86); padding:8px 10px; border-radius:10px; backdrop-filter: blur(4px);
 }
+
+/* Toggle UI button (cache/affiche panel + printBar) */
+#uiToggle{
+  position:absolute; top:12px; right:12px; z-index:1100;
+  background:rgba(20,20,20,.86); color:#eee; border:none; border-radius:12px;
+  padding:8px 10px; cursor:pointer; backdrop-filter: blur(4px);
+}
+#uiToggle:hover{ background:#666; }
+
+/* Quand l’UI est masquée */
+.ui-hidden #panel,
+.ui-hidden #printBar { display:none !important; }
 </style>
 </head>
 <body>
 <div id="map"></div>
 <canvas id="sky"></canvas>
+
+<!-- Bouton Hide/Show UI -->
+<button id="uiToggle" title="Hide/Show UI">-></button>
 
 <div id="panel">
   <div class="block">
@@ -78,7 +93,7 @@ input:checked + .toggle{ background:#3aa163; } input:checked + .toggle::after{ l
     <div>☁️ Cloud cover: <b><span id="cloudVal">--</span>%</b></div>
     <div>💨 Wind: <b><span id="windVal">--</span> m/s</b> (<span id="windKmh">--</span> km/h) — dir <span id="windDirTxt">--</span></div>
     <div>🌧 Rain: <b><span id="rainVal">--</span> mm/h</b></div>
-    <div id="alerts" style="margin-top:6px;color:#f6efe5;">Alerts: <span id="alertsText">—</span></div>
+    <div id="alerts" style="margin-top:6px;color:#ffd38a;">Alerts: <span id="alertsText">—</span></div>
   </div>
 </div>
 
@@ -239,40 +254,96 @@ document.getElementById("warp").onclick=()=>{
   loadWeather(map.getCenter());
 };
 
-// ---------- PRINT (robuste: iframe d'abord, fallback nouvelle fenêtre) ----------
-document.getElementById("printBtn").onclick = function () {
-  var text = (wordsHistory.length ? wordsHistory.join(" / ") : (document.getElementById("word").value || "・・・"));
-  var safe = escapeHtml(text);
+// ---------- UI Hide/Show (panel + print bar) ----------
+(function(){
+  var btn = document.getElementById("uiToggle");
+  function refreshLabel(){
+    btn.textContent = document.body.classList.contains("ui-hidden") ? "<" : ">";
+  }
+  btn.addEventListener("click", function(){
+    document.body.classList.toggle("ui-hidden");
+    refreshLabel();
+  });
+  document.addEventListener("keydown", function(e){
+    if (e.key && e.key.toLowerCase() === "u" && !e.metaKey && !e.ctrlKey && !e.altKey){
+      document.body.classList.toggle("ui-hidden");
+      refreshLabel();
+    }
+  });
+  refreshLabel();
+})();
 
-  // HTML de la page A4 (pas de backticks)
+// ---- Helpers pour Print (métadonnées + nom de fichier) ----
+function collectPrintMeta(){
+  var date = document.getElementById("date").value || "";
+  var hour = document.getElementById("hour").value || "";
+  var c = map.getCenter();
+  var meta = {
+    date: date,
+    hour: hour,
+    lat: (c ? c.lat.toFixed(5) : ""),
+    lng: (c ? c.lng.toFixed(5) : ""),
+    cloud: document.getElementById("cloudVal").textContent || "--",
+    rain: document.getElementById("rainVal").textContent || "--",
+    windMs: document.getElementById("windVal").textContent || "--",
+    windKmh: document.getElementById("windKmh").textContent || "--",
+    windDir: document.getElementById("windDirTxt").textContent || "--",
+    alerts: document.getElementById("alertsText").textContent || "—"
+  };
+  return meta;
+}
+function printFileTitle(meta){
+  var yyyymmdd = (meta.date || "").replace(/-/g, "");
+  var hhmm = (meta.hour || "00:00").replace(":", "");
+  if (hhmm.length < 4) hhmm = (hhmm + "00").slice(0,4);
+  return "ascii-weather-" + yyyymmdd + "-" + hhmm + ".pdf";
+}
+
+// ---------- PRINT (titre personnalisé + légende, robuste GitHub Pages) ----------
+document.getElementById("printBtn").onclick = function () {
+  var words = (wordsHistory.length ? wordsHistory.join(" / ") : (document.getElementById("word").value || "・・・"));
+  var safe = escapeHtml(words);
+  var meta = collectPrintMeta();
+  var titleName = printFileTitle(meta); // ex: ascii-weather-20251007-1500.pdf
+
+  var legend =
+      "Location: " + meta.lat + ", " + meta.lng + "\n" +
+      "Date/Time: " + meta.date + " " + meta.hour + "\n" +
+      "Cloud cover: " + meta.cloud + " %\n" +
+      "Wind: " + meta.windMs + " m/s (" + meta.windKmh + " km/h), dir " + meta.windDir + "\n" +
+      "Rain: " + meta.rain + " mm/h\n" +
+      "Alerts: " + meta.alerts;
+
   var html = ""
     + "<!DOCTYPE html>\n"
     + "<html>\n"
     + "<head>\n"
     + '<meta charset="utf-8">\n'
-    + "<title>Print — ASCII Weather Words</title>\n"
+    + "<title>" + escapeHtml(titleName) + "</title>\n"
     + "<style>\n"
     + "  @page { size: A4; margin: 12mm; }\n"
     + "  html, body { background: #fff; color: #666; font-family: monospace; }\n"
     + "  .page { width: 190mm; min-height: 273mm; margin: 0 auto; display:flex; align-items:center; justify-content:center; }\n"
     + "  .content { font-size: 14pt; line-height: 1.6; word-break: break-word; white-space: pre-wrap; text-align: center; max-width: 170mm; }\n"
     + "  h1 { font-size: 12pt; font-weight: 700; letter-spacing: .08em; color: #888; text-align:center; margin: 0 0 8mm 0; }\n"
-    + "  .footer { position: fixed; bottom: 8mm; left: 0; right: 0; text-align: center; font-size: 9pt; color: #aaa; }\n"
+    + "  .legend { margin-top: 12mm; padding-top: 6mm; border-top: 1px dashed #ccc; color: #888; font-size: 8pt; white-space: pre-line; text-align: left; }\n"
+    + "  .footer { position: fixed; bottom: 8mm; left: 0; right: 0; text-align: center; font-size: 7pt; color: #aaa; }\n"
     + "  @media print { .noprint{display:none;} body{margin:0;} }\n"
     + "</style>\n"
     + "</head>\n"
     + "<body>\n"
     + '  <div class="page">\n'
     + '    <div class="wrap">\n'
-    + "      <h1>ASCII Weather — Words</h1>\n"
+    + "      <h1>Ecriture Meteo - Words</h1>\n"
     + '      <div class="content">' + safe + "</div>\n"
+    + '      <div class="legend">' + escapeHtml(legend) + "</div>\n"
     + "    </div>\n"
     + "  </div>\n"
-    + '  <div class="footer">Generated from ASCII Weather — ' + escapeHtml(new Date().toLocaleString()) + "</div>\n"
+    + '  <div class="footer">Generated from Ecriture Meteo ' + escapeHtml(new Date().toLocaleString()) + "</div>\n"
     + "</body>\n"
     + "</html>";
 
-  // --- Tentative 1: iframe caché, impression immédiate (même geste utilisateur) ---
+  // Tentative 1: iframe caché, impression immédiate
   try {
     var iframe = document.createElement("iframe");
     iframe.style.position = "fixed";
@@ -286,51 +357,36 @@ document.getElementById("printBtn").onclick = function () {
 
     var iw = iframe.contentWindow;
     var doc = iw.document;
-    doc.open();
-    doc.write(html);
-    doc.close();
-
-    function cleanup() { try { document.body.removeChild(iframe); } catch(e){} }
+    doc.open(); doc.write(html); doc.close();
 
     var printed = false;
-    // si afterprint fonctionne, on nettoie
-    iw.addEventListener("afterprint", function(){ printed = true; cleanup(); }, { once: true });
+    function cleanup(){ try { document.body.removeChild(iframe); } catch(e){} }
+    iw.addEventListener("afterprint", function(){ printed = true; cleanup(); }, { once:true });
+    setTimeout(function(){ if(!printed) cleanup(); }, 8000);
 
-    // Impression synchronisée (user gesture conservée)
     try {
       iw.focus();
-      // double RAF pour laisser le moteur composer la page, sans perdre le geste utilisateur
-      iw.requestAnimationFrame(function(){ iw.requestAnimationFrame(function(){ 
-        try { iw.print(); } catch(e) {}
-      });});
-    } catch(e) {
-      // tentative directe si RAF indisponible
-      try { iw.print(); } catch(_) {}
-    }
-
-    // Fallback: si rien au bout de 1200 ms, on passe à la fenêtre
-    setTimeout(function(){
-      if (!printed) {
-        cleanup();
-        openWindowPrint(html);
+      if (iw.requestAnimationFrame) {
+        iw.requestAnimationFrame(function(){ iw.requestAnimationFrame(function(){ try{ iw.print(); }catch(e){} }); });
+      } else {
+        iw.print();
       }
-    }, 1200);
+    } catch(e){}
+
+    setTimeout(function(){ if(!printed) openWindowPrint(html, titleName); }, 1200);
 
   } catch (err) {
-    // En cas d'erreur, fallback immédiat
-    openWindowPrint(html);
+    openWindowPrint(html, titleName);
   }
 
-  // --- Fallback: nouvelle fenêtre (toujours déclenché par le clic) ---
-  function openWindowPrint(htmlStr){
+  function openWindowPrint(htmlStr, tname){
     var w = window.open("", "_blank", "noopener,noreferrer");
-    if (!w) return; // popup bloquée : l'utilisateur devra autoriser
+    if (!w) return;
     var d = w.document;
     d.open();
-    // on ajoute un petit script pour imprimer après le chargement, puis fermer la fenêtre
     d.write(
       htmlStr.replace("</body>",
-        '<script>window.addEventListener("load",function(){setTimeout(function(){window.print(); window.close();}, 50);});<\/script></body>'
+        '<script>window.addEventListener("load",function(){setTimeout(function(){document.title="' + escapeHtml(tname) + '"; window.print(); window.close();}, 50);});<\/script></body>'
       )
     );
     d.close();
@@ -469,4 +525,3 @@ draw();
 </script>
 </body>
 </html>
-
