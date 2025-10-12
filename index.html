@@ -280,19 +280,34 @@ document.getElementById("warp").onclick=()=>{
 // ---------- UI Hide/Show (panel + print bar) ----------
 (function(){
   var btn = document.getElementById("uiToggle");
+
   function refreshLabel(){
     btn.textContent = document.body.classList.contains("ui-hidden") ? "<" : ">";
+    btn.setAttribute("aria-pressed", document.body.classList.contains("ui-hidden") ? "true" : "false");
   }
-  btn.addEventListener("click", function(){
+
+  function toggleUI(){
     document.body.classList.toggle("ui-hidden");
     refreshLabel();
-  });
+  }
+
+  btn.addEventListener("click", toggleUI);
+
+  // Raccourci clavier U — ignoré si on tape dans un champ éditable
   document.addEventListener("keydown", function(e){
+    // si on est dans un input/textarea/contenteditable, on ne fait rien
+    var t = e.target;
+    var tag = (t && t.tagName) ? t.tagName.toLowerCase() : "";
+    var isEditable = t && (
+      tag === "input" || tag === "textarea" || t.isContentEditable
+    );
+    if (isEditable) return;
+
     if (e.key && e.key.toLowerCase() === "u" && !e.metaKey && !e.ctrlKey && !e.altKey){
-      document.body.classList.toggle("ui-hidden");
-      refreshLabel();
+      toggleUI();
     }
   });
+
   refreshLabel();
 })();
 
